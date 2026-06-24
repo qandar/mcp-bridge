@@ -1,0 +1,7 @@
+{
+  "name": "@qandar/mcp-bridge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qandar/mcp-bridge"
+  }
+}
