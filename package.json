@@ -4,7 +4,7 @@
     "description": "MCP bridge for Qandar — connects AI clients to Qandar-hosted MCP catalogs",
     "type": "module",
     "bin": {
-        "qandar-mcp-bridge": "./index.mjs"
+        "qandar-mcp-bridge": "index.mjs"
     },
     "files": [
         "index.mjs"
@@ -15,7 +15,7 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/qandar/mcp-bridge"
+        "url": "git+https://github.com/qandar/mcp-bridge.git"
     },
     "homepage": "https://qandar.com",
     "keywords": [
