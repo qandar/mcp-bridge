@@ -1,6 +1,6 @@
 {
     "name": "@qandar/mcp-bridge",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "MCP bridge for Qandar — connects AI clients to Qandar-hosted MCP catalogs",
     "type": "module",
     "bin": {
