@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { createInterface } from 'node:readline';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 
 let catalogUrl = process.argv[2];
 
@@ -22,9 +23,13 @@ if (!catalogUrl.endsWith('.json')) {
 const serverOrigin = new URL(catalogUrl).origin;
 
 // ローカルキャッシュの読み込み
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const cachePath = join(__dirname, '.catalog_cache.json');
+const cacheDir = join(homedir(), '.qandar');
+try {
+    mkdirSync(cacheDir, { recursive: true });
+} catch (e) {
+    // ignore
+}
+const cachePath = join(cacheDir, 'catalog_cache.json');
 
 let cacheData = {};
 try {
@@ -72,24 +77,53 @@ function respond(id, result) {
     process.stdout.write(payload + "\n");
 }
 
+function respondError(id, code, message, data = null) {
+    const responseObj = {
+        jsonrpc: "2.0",
+        id,
+        error: { code, message }
+    };
+    if (data !== null) {
+        responseObj.error.data = data;
+    }
+    const payload = JSON.stringify(responseObj);
+    if (debugEnabled) {
+        console.error(`[DEBUG] Sending error: id=${id}, code=${code}, message=${message}`);
+    }
+    process.stdout.write(payload + "\n");
+}
+
 // AIからの入力を「一瞬の隙もなく」最優先で受け付ける
 rl.on('line', async (line) => {
     if (!line.trim()) return;
 
-    let requestId = undefined;
+    let request = null;
     try {
-        const request = JSON.parse(line);
-        requestId = request.id;
-        const { method, id, params } = request;
+        request = JSON.parse(line);
+    } catch (err) {
+        respondError(null, -32700, `Parse error: ${err.message}`);
+        return;
+    }
 
-        if (debugEnabled) {
-            console.error(`[DEBUG] Received request: method=${method}, id=${id}, size=${Buffer.byteLength(line, 'utf8')} bytes`);
+    const { jsonrpc, method, id, params } = request;
+
+    if (jsonrpc !== "2.0") {
+        if (id !== undefined) {
+            respondError(id, -32600, "Invalid Request: jsonrpc version must be '2.0'");
         }
+        return;
+    }
 
+    if (debugEnabled) {
+        console.error(`[DEBUG] Received request: method=${method}, id=${id}, size=${Buffer.byteLength(line, 'utf8')} bytes`);
+    }
+
+    try {
         // 1. 初期化要求（initialize）
         if (method === 'initialize') {
-            // キャッシュがあれば即時返却、なければ裏で走らせていた fetch の完了を待つ
             const staticCatalog = currentCatalog || await catalogPromise;
+
+            if (id === undefined) return;
 
             return respond(id, {
                 protocolVersion: "2024-11-05",
@@ -103,11 +137,14 @@ rl.on('line', async (line) => {
         // 2. ツール一覧要求（tools/list）
         if (method === 'tools/list') {
             const staticCatalog = currentCatalog || await catalogPromise;
+            if (id === undefined) return;
             return respond(id, staticCatalog ? staticCatalog.result : { tools: [] });
         }
 
         // 3. ツール実行要求（tools/call）
         if (method === 'tools/call') {
+            if (id === undefined) return;
+
             const staticCatalog = currentCatalog || await catalogPromise;
             if (!staticCatalog) {
                 return respond(id, { isError: true, content: [{ type: "text", text: "Catalog is unavailable." }] });
@@ -116,6 +153,16 @@ rl.on('line', async (line) => {
             const toolName = params?.name;
             if (debugEnabled) {
                 console.error(`[DEBUG] Calling tool: name=${toolName}, arguments=${JSON.stringify(params?.arguments || {})}`);
+            }
+
+            const toolsList = staticCatalog.result?.tools || [];
+            const isToolDefined = toolsList.some(t => t.name === toolName);
+
+            if (!isToolDefined) {
+                return respond(id, {
+                    isError: true,
+                    content: [{ type: "text", text: `Error: Tool '${toolName}' is not defined in the catalog.` }]
+                });
             }
 
             // 検索ツールの実行 (例: search_nuxt_i18n_docs)
@@ -143,7 +190,7 @@ rl.on('line', async (line) => {
                     return titleMatch || descMatch || topicMatch;
                 });
 
-                 if (matches.length === 0) {
+                if (matches.length === 0) {
                     return respond(id, {
                         content: [{
                             type: "text",
@@ -173,7 +220,14 @@ rl.on('line', async (line) => {
 
             // 通常のドキュメント取得ツール (例: get_nuxt_i18n_docs)
             const topicArg = params?.arguments?.topic;
-            const match = staticCatalog.catalog.find(item => item.topic === topicArg);
+            if (!topicArg) {
+                return respond(id, {
+                    isError: true,
+                    content: [{ type: "text", text: "Error: Missing required argument 'topic'." }]
+                });
+            }
+
+            const match = staticCatalog.catalog?.find(item => item.topic === topicArg);
 
             if (!match) {
                 return respond(id, {
@@ -183,7 +237,10 @@ rl.on('line', async (line) => {
             }
 
             // ドキュメント本体をエッジ（R2/Workers）からピンポイントGET
-            const docUrl = new URL(match.path, serverOrigin).href;
+            const baseDirUrl = catalogUrl.endsWith('/')
+                ? catalogUrl
+                : catalogUrl.substring(0, catalogUrl.lastIndexOf('/') + 1);
+            const docUrl = new URL(match.path, baseDirUrl).href;
             const docRes = await fetch(docUrl);
 
             if (!docRes.ok) {
@@ -195,16 +252,20 @@ rl.on('line', async (line) => {
         }
 
         if (id !== undefined) {
-            respond(id, {});
+            respondError(id, -32601, `Method not found: ${method}`);
         }
 
     } catch (err) {
         console.error('Bridge Inner Error:', err.message);
-        if (requestId !== undefined) {
-            respond(requestId, {
-                isError: true,
-                content: [{ type: "text", text: `Bridge Error: ${err.message}` }]
-            });
+        if (id !== undefined) {
+            if (method === 'tools/call') {
+                respond(id, {
+                    isError: true,
+                    content: [{ type: "text", text: `Bridge Error: ${err.message}` }]
+                });
+            } else {
+                respondError(id, -32603, `Internal error: ${err.message}`);
+            }
         }
     }
 });
