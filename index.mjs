@@ -313,13 +313,25 @@ rl.on('line', async (line) => {
 
             if (id === undefined) return;
 
+            const supportedVersions = ["2025-06-18", "2025-03-26", "2024-11-05"];
+            const clientVersion = params?.protocolVersion;
+            const negotiatedVersion = supportedVersions.includes(clientVersion)
+                ? clientVersion
+                : "2024-11-05";
+
             return respond(id, {
-                protocolVersion: "2024-11-05",
+                protocolVersion: negotiatedVersion,
                 capabilities: {
                     tools: {}
                 },
                 serverInfo: staticCatalog ? staticCatalog.serverInfo : { name: "qandar-mcp", version: "1.0.0" }
             });
+        }
+
+        // 1.5 死活監視要求（ping）
+        if (method === 'ping') {
+            if (id === undefined) return;
+            return respond(id, {});
         }
 
         // 2. ツール一覧要求（tools/list）
